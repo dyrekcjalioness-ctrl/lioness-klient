@@ -1,0 +1,185 @@
+<!DOCTYPE html><html lang="pl"><head>    <meta charset="UTF-8">    <meta name="viewport" content="width=device-width, initial-scale=1.0">    <title>LIONESS Rezerwacja</title>    <script src="https://www.gstatic.com/firebasejs/9.17.1/firebase-app-compat.js"></script>    <script src="https://www.gstatic.com/firebasejs/9.17.1/firebase-database-compat.js"></script>    <style>        body { background: #071529; color: #fff; font-family: Arial; padding: 10px; }        .logo-box { text-align: center; margin-bottom: 15px; color: #f0b400; }        .panel { background: #0f2743; padding: 15px; border-radius: 12px; margin-bottom: 10px; }        .grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 5px; }        .cell { padding: 8px; background: #0b1e33; border-radius: 6px; text-align: center; cursor: pointer; font-size: 12px; min-height: 40px; }        .weekday { font-weight: bold; color: #f2c94c; padding: 5px; text-align: center; font-size: 12px; }        .empty-cell { background: transparent; }        .selected { border: 2px solid #f2c94c; }        .today { box-shadow: 0 0 10px #f2c94c; border: 2px solid #f2c94c !important; }        .hour { padding: 10px; background: #0b1e33; margin-bottom: 5px; border-radius: 6px; }        .hour.red { border: 1px solid #e74c3c; background: #2c1a1a; }        input, select { width: 100%; padding: 10px; margin: 5px 0; border-radius: 6px; border: none; background: #132b4a; color: #fff; box-sizing: border-box; }        button { padding: 10px; border: none; border-radius: 6px; cursor: pointer; width: 100%; margin-top: 5px; background: #163a63; color: #fff; font-weight: bold; }        .green { background: #2ecc71; }        .red { background: #c0392b; }        .nav-btn { display: inline-block; margin-top: 8px; padding: 6px 12px; background: #4285F4; color: #fff; text-decoration: none; border-radius: 4px; font-size: 12px; font-weight: bold; text-align: center; }        .calc { background: #10243f; padding: 10px; border-radius: 8px; margin-top: 10px; font-size: 13px; color: #f2c94c; line-height: 1.5; }    </style></head><body><div class="logo-box">    <h2>LIONESS Mobilna Wulkanizacja</h2>    <p>🟢 LIVE SYSTEM | 24/7 Poznań i region (do 150 km)</p></div><div class="panel">        <h3 id="month" style="text-align:center"></h3>        <div class="grid" id="cal"></div></div><div class="panel" id="formPanel" style="display:none;">        <h3>Rezerwacja</h3>        <input id="name" placeholder="Imię">        <input id="phone" placeholder="Telefon" onchange="localStorage.setItem('lioness_phone', this.value)">        <input id="addr" placeholder="Adres (np. Ostródzka 29 Poznań)" oninput="calc()">        <label style="font-size: 13px; color: #ccc;">Ilość aut:</label>    <select id="carCount" onchange="updateCarFields(); calc()">        <option value="1">1 auto</option><option value="2">2 auta</option><option value="3">3 auta</option>        <option value="4">4 auta</option><option value="5">5 aut</option><option value="6">6 aut</option>        <option value="7">7 aut</option><option value="8">8 aut</option>    </select>    <div id="regFields"></div>    <div class="calc" id="calcBox">Wynik kalkulacji...</div>        <button class="green" onclick="save()">Potwierdź rezerwację</button>        <button onclick="document.getElementById('formPanel').style.display='none'">Zamknij</button></div><div class="panel" id="hours"></div><script>        firebase.initializeApp({apiKey:"AIzaSyAG1ukkWJC_05JCeZp41EhyoVJ2Cl58",databaseURL:"https://kalendar-f5dd9-default-rtdb.firebaseio.com"});        const db = firebase.database();        let d = new Date(), sel = null, hour = null, services = {}, bookings = {}, firm = {address:"Rzeczna 4/15 Poznań 61-013", freeKm:5, priceKm:10};        const HOURS = ["07:00","09:00","11:00","13:00","15:00","17:00","19:00","21:00"];    
+        db.ref("services").on("value", s => { services = s.val()||{}; });        
+        db.ref("bookings").on("value", s => { bookings = s.val()||{}; render(); if(sel) renderHours(); });        
+        db.ref("settings").on("value", s => { if(s.val()) firm = s.val(); });    
+
+    async function geocode(a){
+        try{
+            const r=await fetch(`https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(a)}`);
+            const d=await r.json();
+            return d[0]?{lat:+d[0].lat,lon:+d[0].lon}:null;
+        }catch(e){return null;}
+    }
+
+    async function getKm(a, b) {
+        const x = await geocode(a);
+        const y = await geocode(b);
+        if (!x || !y) return 5; 
+        try {
+            const r = await fetch(`https://router.project-osrm.org/route/v1/driving/${x.lon},${x.lat};${y.lon},${y.lat}?overview=false`);
+            const j = await r.json();
+            if (j.routes && j.routes[0] && j.routes[0].distance) {
+                return j.routes[0].distance / 1000;
+            }
+        } catch (e) {}
+        let R = 6371;
+        let dLat = (y.lat - x.lat) * Math.PI / 180;
+        let dLon = (y.lon - x.lon) * Math.PI / 180;
+        let lat1 = x.lat * Math.PI / 180;
+        let lat2 = y.lat * Math.PI / 180;
+        let a_haversine = Math.sin(dLat/2) * Math.sin(dLat/2) + Math.sin(dLon/2) * Math.sin(dLon/2) * Math.cos(lat1) * Math.cos(lat2);
+        let c = 2 * Math.atan2(Math.sqrt(a_haversine), Math.sqrt(1-a_haversine));
+        return (R * c) * 1.3;
+    }
+
+    async function calc(){                
+        let addr = document.getElementById("addr").value;
+        let calcBox = document.getElementById("calcBox");
+        if(addr.length < 5) {
+            calcBox.innerHTML = "Wpisz adres (np. Ostródzka 29 Poznań)...";
+            return;
+        }
+        calcBox.innerHTML = "Trwa obliczanie trasy przez nawigację...";
+        
+        let km = await getKm(firm.address, addr);
+        
+        if (km > 150) {
+            calcBox.innerHTML = `<span style="color:#e74c3c;">⚠️ Dystans (${km.toFixed(1)} km) przekracza maksymalny promień 150 km!</span>`;
+            return;
+        }
+
+        let extra = km > firm.freeKm ? (km - firm.freeKm) * firm.priceKm : 0;                
+        let totalSvc = 0;
+        let serviceNames = [];
+        let pickers = document.querySelectorAll('.servicePickers');
+        pickers.forEach((s, index) => {             
+            if(services[s.value]) {                 
+                let basePrice = parseFloat(services[s.value].price);
+                let carPrice = basePrice + (index === 0 ? extra : 0);
+                totalSvc += carPrice;                 
+                serviceNames.push(services[s.value].name);             
+            }         
+        });
+
+        let total = totalSvc.toFixed(2);
+        let svcText = serviceNames.length > 0 ? serviceNames.join(", ") : "Usługa";
+        calcBox.innerHTML = `<b>${svcText}</b><br>Dojazd (nawigacja): ${km.toFixed(1)} km<br>Extra (tylko 1. auto): ${extra.toFixed(2)} zł<br><b>RAZEM: <span id="finalTotal">${total}</span> zł</b>`;
+    }
+
+    function updateCarFields() {        
+        let count = document.getElementById("carCount").value;        
+        let container = document.getElementById("regFields");        
+        container.innerHTML = "";        
+        let options = Object.keys(services).map(k => `<option value="${k}">${services[k].name} (${services[k].price} zł)</option>`).join("");        
+        for(let i=1; i<=count; i++) { 
+            container.innerHTML += `<div style="border-bottom:1px solid #163a63; margin-bottom:5px;"><input class="regInputs" placeholder="Nr rej. auta ${i}"><select class="servicePickers" onchange="calc()"><option value="">Wybierz usługę</option>${options}</select></div>`; 
+        }    
+    }
+
+    function render() {         
+        let c = document.getElementById("cal"); c.innerHTML = "";         
+        let now = new Date(); let y = d.getFullYear(), m = d.getMonth();        
+        document.getElementById("month").innerText = new Date(y, m).toLocaleString("pl-PL", {month:"long", year:"numeric"});        
+        ["Pn", "Wt", "Śr", "Czw", "Pt", "Sb", "Nd"].forEach(n => c.innerHTML += `<div class="weekday">${n}</div>`);        
+        let offset = (new Date(y, m, 1).getDay() || 7) - 1;        
+        for(let i=0; i<offset; i++) c.innerHTML += `<div class="cell empty-cell"></div>`;        
+        for(let i=1; i<=new Date(y, m+1, 0).getDate(); i++) {             
+            let key = `${y}-${m+1}-${i}`;            
+            let isToday = (i === now.getDate() && m === now.getMonth() && y === now.getFullYear());            
+            let busy = bookings[key] ? Object.keys(bookings[key]).length : 0;            
+            let div = document.createElement("div");             
+            div.className = "cell" + (sel==key?" selected":"") + (isToday?" today":"");             
+            div.innerHTML = `<b>${i}</b><br><small>${HOURS.length-busy} wolnych</small>`;             
+            div.onclick = () => { sel=key; render(); renderHours(); }; 
+            c.appendChild(div);         
+        }     
+    }
+
+    function renderHours() {         
+        let h = document.getElementById("hours"); h.innerHTML = "";         
+        let myPhone = localStorage.getItem("lioness_phone") || "";        
+        HOURS.forEach(t => {             
+            let r = bookings[sel] ? bookings[sel][t] : null;             
+            let div = document.createElement("div"); div.className = "hour" + (r ? " red" : "");            
+            if(!r) { 
+                div.innerHTML = `<div><b>${t}</b> - WOLNE</div><button onclick="hour='${t}'; document.getElementById('formPanel').style.display='block'; updateCarFields(); document.getElementById('phone').value=localStorage.getItem('lioness_phone')||'';">Rezerwuj</button>`; 
+            } else if(r.phone === myPhone) {                 
+                let carsHtml = "";                 
+                if(r.cars && Array.isArray(r.cars)) {                     
+                    r.cars.forEach((car, index) => {                         
+                        let carExtra = index === 0 && r.details && parseFloat(r.details.extra) > 0 ? ` (Dojazd: ${r.details.km} km, Extra: ${r.details.extra} zł)` : ` (Dojazd: 0 km, Extra: 0 zł)`;                         
+                        carsHtml += `<br>🚗 Auto ${index+1}: ${car.reg} (${car.serviceName}) - ${parseFloat(car.basePrice || car.price).toFixed(2)} zł${carExtra}`;                     });                 
+                } else {                     
+                    carsHtml = `<br>🚗 ${r.reg}`;                 
+                }
+                
+                let encodedAddr = encodeURIComponent(r.addr);
+                let navUrl = `https://www.google.com/maps/dir/?api=1&destination=${encodedAddr}`;
+
+                div.innerHTML = `<div><b>${t}</b><br>👤 ${r.name}<br>📞 ${r.phone}${carsHtml}<br>📍 ${r.addr}<br><a href="${navUrl}" target="_blank" class="nav-btn">📍 Otwórz nawigację (Google Maps)</a><br><br>💰 <b>RAZEM: ${r.totalPrice ? parseFloat(r.totalPrice).toFixed(2) + ' zł' : 'wliczone'}</b></div><button class="red" onclick="deleteB('${t}')">Usuń</button>`; 
+            } else { 
+                div.innerHTML = `<div><b>${t}</b> - Zajęte</div>`; 
+            }
+            h.appendChild(div);         
+        });     
+    }
+
+    async function save() {                
+        let name = document.getElementById("name").value;        
+        let phone = document.getElementById("phone").value;        
+        let addr = document.getElementById("addr").value;        
+        let count = parseInt(document.getElementById("carCount").value);        
+        let regs = document.querySelectorAll('.regInputs');        
+        let svcs = document.querySelectorAll('.servicePickers');                
+        
+        if(!name || !phone || !addr) return alert("Wypełnij imię, telefon i adres!");                
+        
+        let km = await getKm(firm.address, addr);
+        if (km > 150) return alert("Nie można potwierdzić rezerwacji: dystans przekracza 150 km!");
+        
+        let extra = km > firm.freeKm ? (km - firm.freeKm) * firm.priceKm : 0;                
+        let carsData = [];        
+        for(let i = 0; i < regs.length; i++) {            
+            if(!regs[i].value || !svcs[i].value) return alert("Wypełnij nr rej. i usługę dla każdego auta!");            
+            let srv = services[svcs[i].value] || {name: "Usługa", price: 0};            
+            let basePrice = parseFloat(srv.price || 0);            
+            let carPrice = basePrice + (i === 0 ? extra : 0);            
+            carsData.push({                
+                reg: regs[i].value,                
+                serviceName: srv.name,                
+                basePrice: basePrice,                
+                price: parseFloat(carPrice.toFixed(2))            });        
+        }                
+        
+        let total = parseFloat(carsData.reduce((sum, car) => sum + car.price, 0).toFixed(2));                
+        let slotsNeeded = 1;        
+        if (count >= 2 && count <= 3) slotsNeeded = 2;        
+        else if (count >= 4 && count <= 5) slotsNeeded = 3;        
+        else if (count >= 6 && count <= 8) slotsNeeded = 4;        
+        let startIndex = HOURS.indexOf(hour);                
+        
+        for(let i = 0; i < slotsNeeded; i++) {            
+            if(startIndex + i >= HOURS.length || (bookings[sel] && bookings[sel][HOURS[startIndex + i]])) {                
+                return alert("Brak wolnych miejsc w wybranych godzinach!");            
+            }        }
+        
+        for(let i = 0; i < slotsNeeded; i++) {            
+            db.ref(`bookings/${sel}/${HOURS[startIndex + i]}`).set({                 
+                name,                 
+                phone,                 
+                addr,                 
+                totalPrice: (i === 0) ? total : 0,                 
+                carCount: count,                 
+                isMainSlot: (i === 0),                 
+                cars: carsData,                 
+                details: {                    
+                    km: (i === 0 ? km.toFixed(1) : "0.0"),                    
+                    extra: (i === 0 ? extra.toFixed(2) : "0.00")                 },                 
+                partnerId: "KLIENT_WEB"             });        
+        }        
+        alert("Zapisano rezerwację!");         
+        window.location.reload();    
+    }
+
+    function deleteB(t) { if(confirm("Usunąć?")) db.ref(`bookings/${sel}/${t}`).remove(); }    
+    render();</script></body></html>
